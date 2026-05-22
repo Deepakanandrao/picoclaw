@@ -161,19 +161,19 @@ func registerSharedTools(
 		// Message tool
 		if cfg.Tools.IsToolEnabled("message") {
 			messageTool := tools.NewMessageTool()
-			messageTool.ConfigureLocalMedia(
-				agent.Workspace,
-				cfg.Agents.Defaults.RestrictToWorkspace,
-				cfg.Agents.Defaults.GetMaxMediaSize(),
-				allowReadPaths,
-			)
+			if cfg.Tools.Message.MediaEnabled {
+				messageTool.ConfigureLocalMedia(
+					agent.Workspace,
+					cfg.Agents.Defaults.RestrictToWorkspace,
+					cfg.Agents.Defaults.GetMaxMediaSize(),
+					allowReadPaths,
+				)
+			}
 			messageTool.SetSendCallback(func(
 				ctx context.Context,
 				channel, chatID, content, replyToMessageID string,
 				mediaParts []bus.MediaPart,
 			) error {
-				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer pubCancel()
 				outboundCtx := bus.NewOutboundContext(channel, chatID, replyToMessageID)
 				outboundAgentID, outboundSessionKey, outboundScope := outboundTurnMetadata(
 					tools.ToolAgentID(ctx),
@@ -181,22 +181,38 @@ func registerSharedTools(
 					tools.ToolSessionScope(ctx),
 				)
 				if len(mediaParts) > 0 {
-					return msgBus.PublishOutboundMedia(pubCtx, bus.OutboundMediaMessage{
+					outboundMedia := bus.OutboundMediaMessage{
+						Channel:    channel,
+						ChatID:     chatID,
 						Context:    outboundCtx,
 						AgentID:    outboundAgentID,
 						SessionKey: outboundSessionKey,
 						Scope:      outboundScope,
 						Parts:      mediaParts,
-					})
+					}
+					if al.channelManager != nil && channel != "" {
+						return al.channelManager.SendMedia(ctx, outboundMedia)
+					}
+					pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer pubCancel()
+					return msgBus.PublishOutboundMedia(pubCtx, outboundMedia)
 				}
-				return msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+				outboundMessage := bus.OutboundMessage{
+					Channel:          channel,
+					ChatID:           chatID,
 					Context:          outboundCtx,
 					AgentID:          outboundAgentID,
 					SessionKey:       outboundSessionKey,
 					Scope:            outboundScope,
 					Content:          content,
 					ReplyToMessageID: replyToMessageID,
-				})
+				}
+				if al.channelManager != nil && channel != "" {
+					return al.channelManager.SendMessage(ctx, outboundMessage)
+				}
+				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer pubCancel()
+				return msgBus.PublishOutbound(pubCtx, outboundMessage)
 			})
 			agent.Tools.Register(messageTool)
 		}
